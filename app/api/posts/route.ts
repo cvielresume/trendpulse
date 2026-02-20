@@ -8,31 +8,32 @@ export async function GET(request: NextRequest) {
   const forceRefresh = searchParams.get("refresh") === "true";
   
   try {
-    let posts;
+    let result;
     let subreddits: string[] = [];
     
     // Handle pain-points category specially
     if (category === "pain-points") {
-      posts = await fetchPainPoints();
+      result = await fetchPainPoints();
     } else {
       // Get subreddits for this category
       subreddits = subredditMapping[category] || subredditMapping.trending;
-      posts = await fetchCategoryPosts(subreddits, 25);
+      result = await fetchCategoryPosts(subreddits, 25);
     }
     
     return NextResponse.json({
-      success: true,
-      posts,
+      success: result.posts.length > 0,
+      posts: result.posts,
       category,
       fetchedAt: Date.now(),
       subreddits,
+      error: result.error || null,
     });
   } catch (error) {
     console.error("Failed to fetch posts:", error);
     return NextResponse.json(
       { 
         success: false, 
-        error: "Failed to fetch posts",
+        error: "Failed to fetch posts: " + String(error),
         posts: [],
       },
       { status: 500 }

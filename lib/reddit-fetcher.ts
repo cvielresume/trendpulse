@@ -50,59 +50,75 @@ export const complaintKeywords = [
 ];
 
 // Search Reddit for pain points using search API
-async function searchPainPoints(keywords: string[], limit = 100): Promise<RawRedditPost[]> {
+async function searchPainPoints(keywords: string[], limit = 100): Promise<{ posts: RawRedditPost[]; error?: string }> {
   // Build search query with proper encoding
   const searchQuery = encodeURIComponent(keywords.join(" OR "));
   
-  const url = `https://www.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`;
+  const url = `https://old.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`;
   console.log(`Searching: ${url}`);
   
   try {
     const response = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://www.reddit.com/",
+        "Origin": "https://www.reddit.com",
       },
     });
     
     if (!response.ok) {
       console.error(`Failed to search pain points: ${response.status}`);
-      return [];
+      return { posts: [], error: `Reddit returned ${response.status}` };
     }
     
     const data = await response.json();
-    return data.data?.children || [];
+    const posts = data.data?.children || [];
+    console.log(`Found ${posts.length} pain point results`);
+    return { posts };
   } catch (error) {
     console.error("Error searching pain points:", error);
-    return [];
+    return { posts: [], error: String(error) };
   }
 }
 
 // Fetch posts from a single subreddit (hot or rising)
-async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot", limit = 25): Promise<RawRedditPost[]> {
+async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot", limit = 25): Promise<{ posts: RawRedditPost[]; error?: string }> {
   try {
-    const response = await fetch(
-      `https://www.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`,
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "application/json",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-      }
-    );
+    // Try old.reddit.com first (often less strict about cloud IPs)
+    const url = `https://old.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://www.reddit.com/",
+        "Origin": "https://www.reddit.com",
+      },
+      redirect: "follow",
+    });
     
     if (!response.ok) {
-      console.error(`Failed to fetch r/${subreddit}/${sort}: ${response.status}`);
-      return [];
+      const errorText = await response.text().catch(() => "");
+      console.error(`Failed to fetch r/${subreddit}/${sort}: ${response.status} - ${errorText.slice(0, 200)}`);
+      return { posts: [], error: `Reddit returned ${response.status}` };
     }
     
     const data = await response.json();
-    return data.data?.children || [];
+    const posts = data.data?.children || [];
+    console.log(`Fetched ${posts.length} posts from r/${subreddit}/${sort}`);
+    return { posts };
   } catch (error) {
     console.error(`Error fetching r/${subreddit}/${sort}:`, error);
-    return [];
+    return { posts: [], error: String(error) };
   }
 }
 
@@ -169,18 +185,31 @@ function transformPost(post: RawRedditPost, isRising = false): RedditPost {
 export async function fetchCategoryPosts(
   subreddits: string[],
   limitPerSubreddit = 20
-): Promise<RedditPost[]> {
+): Promise<{ posts: RedditPost[]; error?: string }> {
+  const errors: string[] = [];
+  
   // Fetch HOT posts (popular now, any age)
   const hotPromises = subreddits.map(sr => fetchSubreddit(sr, "hot", limitPerSubreddit));
   const hotResults = await Promise.all(hotPromises);
-  const hotPosts = hotResults.flat();
+  const hotPosts = hotResults.flatMap(r => {
+    if (r.error) errors.push(r.error);
+    return r.posts;
+  });
   
   // Fetch RISING posts (gaining momentum, any age)
   const risingPromises = subreddits.map(sr => fetchSubreddit(sr, "rising", Math.floor(limitPerSubreddit / 2)));
   const risingResults = await Promise.all(risingPromises);
-  const risingPosts = risingResults.flat();
+  const risingPosts = risingResults.flatMap(r => {
+    if (r.error) errors.push(r.error);
+    return r.posts;
+  });
   
   console.log(`Fetched ${hotPosts.length} hot + ${risingPosts.length} rising = ${hotPosts.length + risingPosts.length} total posts`);
+  
+  // If we got no posts, return the error
+  if (hotPosts.length === 0 && risingPosts.length === 0 && errors.length > 0) {
+    return { posts: [], error: errors[0] };
+  }
   
   // Apply quality filters (no time filter)
   const filterStats: Record<string, number> = {};
@@ -227,14 +256,20 @@ export async function fetchCategoryPosts(
   
   console.log(`Returning ${sortedPosts.length} unique posts (${risingCount} rising)`);
   
-  return sortedPosts;
+  return { posts: sortedPosts };
 }
 
 // Fetch pain points from Reddit search
-export async function fetchPainPoints(): Promise<RedditPost[]> {
+export async function fetchPainPoints(): Promise<{ posts: RedditPost[]; error?: string }> {
   console.log("Searching Reddit for pain points...");
   
-  const searchResults = await searchPainPoints(complaintKeywords, 100);
+  const result = await searchPainPoints(complaintKeywords, 100);
+  
+  if (result.error && result.posts.length === 0) {
+    return { posts: [], error: result.error };
+  }
+  
+  const searchResults = result.posts;
   console.log(`Found ${searchResults.length} pain point results`);
   
   // Apply quality filters
@@ -256,5 +291,5 @@ export async function fetchPainPoints(): Promise<RedditPost[]> {
   
   console.log(`Returning ${transformed.length} pain points`);
   
-  return transformed;
+  return { posts: transformed };
 }

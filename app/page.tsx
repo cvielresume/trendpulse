@@ -160,6 +160,9 @@ export default function Home() {
         setPosts(data.posts);
         saveToCache(apiCategory, data.posts);
         setCacheAge(0);
+      } else if (data.error) {
+        // Show the actual error from the server
+        setError(`${data.error}. Reddit may be blocking cloud servers.`);
       } else if (data.posts.length === 0 && !cached) {
         setError("No posts found. Try a different category.");
       }
