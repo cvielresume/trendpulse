@@ -329,22 +329,48 @@ export async function fetchCategoryPosts(
   return { posts: sortedPosts };
 }
 
-// Fetch pain points from Reddit search
+// Fetch pain points from problem-focused subreddits (RSS works, search API is blocked)
 export async function fetchPainPoints(): Promise<{ posts: RedditPost[]; error?: string }> {
-  console.log("Searching Reddit for pain points...");
+  console.log("Fetching pain points from problem subreddits...");
   
-  const result = await searchPainPoints(complaintKeywords, 100);
+  // Subreddits where people complain or ask for help
+  const problemSubreddits = [
+    "HelpMeFind",
+    "Advice", 
+    "NoStupidQuestions",
+    "TooAfraidToAsk",
+    "needadvice",
+    "Help",
+    "answers",
+    "findareddit",
+    "smallbusiness",
+    "startups",
+    "SaaS",
+    "programming",
+  ];
   
-  if (result.error && result.posts.length === 0) {
-    return { posts: [], error: result.error };
+  // Fetch from these subreddits via RSS (works on Vercel)
+  const promises = problemSubreddits.map(sr => fetchSubreddit(sr, "hot", 25));
+  const results = await Promise.all(promises);
+  const allRawPosts = results.flatMap(r => r.posts);
+  
+  console.log(`Fetched ${allRawPosts.length} total posts from problem subreddits`);
+  
+  // Filter for pain point keywords in title
+  const painPointPosts = allRawPosts.filter(post => {
+    const title = post.data.title.toLowerCase();
+    return complaintKeywords.some(keyword => title.includes(keyword));
+  });
+  
+  console.log(`Found ${painPointPosts.length} posts matching pain point keywords`);
+  
+  if (painPointPosts.length === 0) {
+    return { posts: [], error: "No pain points found right now. Try again later." };
   }
-  
-  const searchResults = result.posts;
-  console.log(`Found ${searchResults.length} pain point results`);
   
   // Apply quality filters
   const filterStats: Record<string, number> = {};
-  const filtered = searchResults.filter(post => {
+  const filtered = painPointPosts.filter(post => {
     const result = passesFilters(post);
     if (!result.passes && result.reason) {
       filterStats[result.reason] = (filterStats[result.reason] || 0) + 1;
@@ -359,7 +385,10 @@ export async function fetchPainPoints(): Promise<{ posts: RedditPost[]; error?: 
   const transformed = filtered.map(post => transformPost(post, false));
   transformed.sort((a, b) => b.upvotes - a.upvotes);
   
-  console.log(`Returning ${transformed.length} pain points`);
+  // Limit to top 50
+  const limited = transformed.slice(0, 50);
   
-  return { posts: transformed };
+  console.log(`Returning ${limited.length} pain points`);
+  
+  return { posts: limited };
 }
