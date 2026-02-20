@@ -81,33 +81,9 @@ async function searchPainPointsRSS(keywords: string[], limit = 100): Promise<{ p
 }
 
 // Fetch posts from a single subreddit (hot or rising)
-// Try multiple methods: RSS first (less blocked), then JSON API
+// Priority: JSON API (has engagement data) > RSS (fallback)
 async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot", limit = 25): Promise<{ posts: RawRedditPost[]; error?: string }> {
-  // Method 1: Try RSS feed (often works where JSON API is blocked)
-  if (sort === "hot") {
-    try {
-      const rssUrl = `https://www.reddit.com/r/${subreddit}/.rss?limit=${limit}`;
-      const response = await fetch(rssUrl, {
-        headers: {
-          "User-Agent": "TrendPulse/1.0 (personal project)",
-          "Accept": "application/rss+xml, application/xml, text/xml",
-        },
-      });
-      
-      if (response.ok) {
-        const xmlText = await response.text();
-        const posts = parseRedditRSS(xmlText);
-        if (posts.length > 0) {
-          console.log(`Fetched ${posts.length} posts from r/${subreddit} via RSS`);
-          return { posts };
-        }
-      }
-    } catch (error) {
-      console.log(`RSS failed for r/${subreddit}, trying JSON API...`);
-    }
-  }
-  
-  // Method 2: Try old.reddit.com JSON API
+  // Method 1: Try JSON API first (has upvotes, comments, etc.)
   try {
     const url = `https://old.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`;
     
@@ -121,20 +97,42 @@ async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot",
       redirect: "follow",
     });
     
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      console.error(`Failed to fetch r/${subreddit}/${sort}: ${response.status} - ${errorText.slice(0, 200)}`);
-      return { posts: [], error: `Reddit returned ${response.status}` };
+    if (response.ok) {
+      const data = await response.json();
+      const posts = data.data?.children || [];
+      if (posts.length > 0) {
+        console.log(`Fetched ${posts.length} posts from r/${subreddit}/${sort} via JSON`);
+        return { posts };
+      }
     }
-    
-    const data = await response.json();
-    const posts = data.data?.children || [];
-    console.log(`Fetched ${posts.length} posts from r/${subreddit}/${sort}`);
-    return { posts };
+    console.log(`JSON API failed for r/${subreddit}/${sort}: ${response.status}, trying RSS...`);
   } catch (error) {
-    console.error(`Error fetching r/${subreddit}/${sort}:`, error);
-    return { posts: [], error: String(error) };
+    console.log(`JSON API error for r/${subreddit}: ${error}, trying RSS...`);
   }
+  
+  // Method 2: Fallback to RSS (less data but often works when JSON is blocked)
+  try {
+    const rssUrl = `https://www.reddit.com/r/${subreddit}/${sort}.rss?limit=${limit}`;
+    const response = await fetch(rssUrl, {
+      headers: {
+        "User-Agent": "TrendPulse/1.0 (personal project)",
+        "Accept": "application/rss+xml, application/xml, text/xml",
+      },
+    });
+    
+    if (response.ok) {
+      const xmlText = await response.text();
+      const posts = parseRedditRSS(xmlText);
+      if (posts.length > 0) {
+        console.log(`Fetched ${posts.length} posts from r/${subreddit} via RSS (fallback)`);
+        return { posts };
+      }
+    }
+  } catch (error) {
+    console.error(`RSS also failed for r/${subreddit}:`, error);
+  }
+  
+  return { posts: [], error: `Failed to fetch r/${subreddit}` };
 }
 
 // Parse Reddit RSS feed to extract posts
@@ -149,7 +147,7 @@ function parseRedditRSS(xml: string): RawRedditPost[] {
     const entry = match[1];
     
     // Extract fields
-    const idMatch = entry.match(/<id>.*?\/comments\/([a-z0-9]+)\//i);
+    const idMatch = entry.match(/<id>t3_([a-z0-9]+)<\/id>/i) || entry.match(/<id>.*?\/comments\/([a-z0-9]+)\//i);
     const titleMatch = entry.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/i) || entry.match(/<title>(.*?)<\/title>/i);
     const subredditMatch = entry.match(/<category\s+term="([^"]+)"/i);
     const linkMatch = entry.match(/<link[^>]+href="([^"]+)"/i);
@@ -158,21 +156,36 @@ function parseRedditRSS(xml: string): RawRedditPost[] {
     
     if (!idMatch || !titleMatch) continue;
     
-    // Extract upvotes and comments from content
+    // Extract upvotes and comments from content (Reddit RSS format varies)
     const content = contentMatch?.[1] || "";
-    const upvotesMatch = content.match(/(\d+)\s*points?/i);
-    const commentsMatch = content.match(/(\d+)\s*comments?/i);
+    
+    // Try different formats: "123 points", "123•", score in content
+    let upvotes = 0;
+    let comments = 0;
+    
+    // Format 1: "123 points" or "123 point"
+    const upvotesMatch1 = content.match(/(\d+)\s*points?/i);
+    const commentsMatch1 = content.match(/(\d+)\s*comments?/i);
+    
+    if (upvotesMatch1) upvotes = parseInt(upvotesMatch1[1], 10);
+    if (commentsMatch1) comments = parseInt(commentsMatch1[1], 10);
+    
+    // Fix permalink URL - remove duplicate if present
+    let permalink = linkMatch?.[1] || "";
+    if (permalink.includes("reddit.comhttps://")) {
+      permalink = permalink.replace("reddit.comhttps://", "");
+    }
     
     posts.push({
       data: {
         id: idMatch[1],
         subreddit_name_prefixed: `r/${subredditMatch?.[1] || "unknown"}`,
-        title: titleMatch[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"),
-        ups: parseInt(upvotesMatch?.[1] || "0", 10),
-        num_comments: parseInt(commentsMatch?.[1] || "0", 10),
+        title: titleMatch[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"'),
+        ups: upvotes,
+        num_comments: comments,
         created_utc: publishedMatch?.[1] ? new Date(publishedMatch[1]).getTime() / 1000 : Date.now() / 1000,
-        permalink: linkMatch?.[1] || "",
-        url: linkMatch?.[1] || "",
+        permalink: permalink,
+        url: permalink,
         domain: "reddit.com",
         is_self: true,
         is_video: false,
@@ -227,6 +240,13 @@ function passesFilters(post: RawRedditPost): { passes: boolean; reason?: string 
 // Transform raw Reddit post to our format
 function transformPost(post: RawRedditPost, isRising = false): RedditPost {
   const data = post.data;
+  
+  // Fix permalink - don't double-prefix if already a full URL
+  let permalink = data.permalink;
+  if (permalink && !permalink.startsWith('http')) {
+    permalink = `https://reddit.com${permalink}`;
+  }
+  
   return {
     id: data.id,
     subreddit: data.subreddit_name_prefixed,
@@ -234,7 +254,7 @@ function transformPost(post: RawRedditPost, isRising = false): RedditPost {
     upvotes: data.ups,
     comments: data.num_comments,
     timeAgo: timeAgo(data.created_utc),
-    permalink: `https://reddit.com${data.permalink}`,
+    permalink: permalink || `https://reddit.com/r/${data.subreddit_name_prefixed.replace('r/', '')}/comments/${data.id}`,
     url: data.url,
     domain: data.domain,
     postHint: data.post_hint || null,
