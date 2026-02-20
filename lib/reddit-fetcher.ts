@@ -32,28 +32,31 @@ interface RawRedditPost {
   };
 }
 
-// Complaint/pain point keywords to search for (simplified for better results)
+// Complaint/pain point keywords - must be SPECIFIC phrases that indicate problems
 export const complaintKeywords = [
   "i hate",
-  "frustrated",
-  "annoying",
-  "expensive",
-  "why is",
-  "i wish",
+  "i wish there was",
   "is there a tool",
-  "how do i",
-  "help me",
-  "struggling with",
-  "problem with",
-  "sucks",
-  "tired of",
+  "is there an app",
+  "how do i fix",
+  "help me find",
+  "why doesn't exist",
+  "this is broken",
+  "needs to be fixed",
+  "frustrated with",
+  "annoyed by",
+  "struggling to find",
+  "pain point",
+  "workaround for",
+  "clunky and slow",
 ];
 
 // Search Reddit for pain points using RSS (works on Vercel!)
 async function searchPainPointsRSS(keywords: string[], limit = 100): Promise<{ posts: RawRedditPost[]; error?: string }> {
-  // Build search query - RSS format
-  const searchQuery = keywords.slice(0, 5).join(" OR "); // Limit keywords to avoid URL issues
-  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(searchQuery)}&sort=relevance&t=day&limit=${limit}`;
+  // Build search query - use top 8 most specific keywords
+  const searchQuery = keywords.slice(0, 8).join(" OR ");
+  // Sort by new to find recent complaints, not old popular posts
+  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(searchQuery)}&sort=new&t=week&limit=${limit}`;
   
   console.log(`Searching via RSS: ${url}`);
   
