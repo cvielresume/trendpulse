@@ -74,13 +74,22 @@ export default function Home() {
   const [pullDistance, setPullDistance] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const pullDistanceRef = useRef(0);
+  
+  // Keep refs for values needed in event handlers (avoids stale closures)
+  const selectedCategoryRef = useRef(selectedCategory);
+  const showSavedRef = useRef(showSaved);
+  const fetchPostsRef = useRef(fetchPosts);
+  
+  useEffect(() => { selectedCategoryRef.current = selectedCategory; }, [selectedCategory]);
+  useEffect(() => { showSavedRef.current = showSaved; }, [showSaved]);
+  useEffect(() => { fetchPostsRef.current = fetchPosts; }, [fetchPosts]);
 
   // Load saved posts on mount
   useEffect(() => {
     setSavedPosts(loadSavedPosts());
   }, []);
   
-  // Pull to refresh - use native scroll detection
+  // Pull to refresh - event listeners with refs for latest values
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -89,7 +98,7 @@ export default function Home() {
     let isPulling = false;
     
     const handleTouchStart = (e: TouchEvent) => {
-      if (window.scrollY === 0 && !showSaved) {
+      if (window.scrollY === 0 && !showSavedRef.current) {
         startY = e.touches[0].clientY;
         isPulling = true;
       }
@@ -110,10 +119,18 @@ export default function Home() {
     const handleTouchEnd = () => {
       if (pullDistanceRef.current > 60 && isPulling) {
         setIsRefreshing(true);
-        const apiCategory = categoryToApiCategory[selectedCategory] || "trending";
+        const cat = selectedCategoryRef.current;
+        const apiCategory = categoryToApiCategory[cat] || "trending";
         clearCategoryCache(apiCategory);
-        fetchPosts(selectedCategory, true);
+        
+        // Clear posts to show we're refreshing
+        setPosts([]);
+        setCacheAge(null);
+        
+        // Fetch fresh data
+        fetchPostsRef.current(cat, true);
       }
+      
       pullDistanceRef.current = 0;
       setPullDistance(0);
       isPulling = false;
@@ -128,7 +145,7 @@ export default function Home() {
       container.removeEventListener('touchmove', handleTouchMove);
       container.removeEventListener('touchend', handleTouchEnd);
     };
-  }, [selectedCategory, showSaved, fetchPosts]);
+  }, []); // Empty deps - uses refs for changing values
 
   const toggleSave = (post: RedditPost) => {
     const isSaved = savedPosts.some(p => p.id === post.id);
@@ -266,8 +283,9 @@ export default function Home() {
       }}
     >
       {/* Pull indicator */}
-      {!showSaved && pullDistance > 0 && (
+      {!showSaved && pullDistance > 0 && !isRefreshing && (
         <div
+          id="pull-indicator"
           style={{
             height: pullDistance,
             display: "flex",
@@ -280,6 +298,26 @@ export default function Home() {
         >
           {pullDistance > 60 ? "↓ Release to refresh" : "↓ Pull to refresh"}
         </div>
+      )}
+      
+      {/* Refreshing indicator */}
+      {isRefreshing && !showSaved && (
+        <div
+          style={{
+            padding: "16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--accent-coral)",
+            fontSize: "14px",
+            fontWeight: 500,
+            gap: "8px",
+          }}
+        >
+          <span style={{ animation: "spin 1s linear infinite" }}>↻</span>
+          Refreshing...
+        </div>
+      )}
       )}
 
       {/* Header */}
