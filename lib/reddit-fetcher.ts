@@ -49,43 +49,35 @@ export const complaintKeywords = [
   "tired of",
 ];
 
-// Search Reddit for pain points using search API
-// Try multiple approaches since Reddit blocks cloud IPs
-async function searchPainPoints(keywords: string[], limit = 100): Promise<{ posts: RawRedditPost[]; error?: string }> {
-  // Build search query with proper encoding
-  const searchQuery = encodeURIComponent(keywords.join(" OR "));
+// Search Reddit for pain points using RSS (works on Vercel!)
+async function searchPainPointsRSS(keywords: string[], limit = 100): Promise<{ posts: RawRedditPost[]; error?: string }> {
+  // Build search query - RSS format
+  const searchQuery = keywords.slice(0, 5).join(" OR "); // Limit keywords to avoid URL issues
+  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(searchQuery)}&sort=relevance&t=day&limit=${limit}`;
   
-  // Try multiple endpoints
-  const endpoints = [
-    `https://old.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`,
-    `https://www.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`,
-  ];
+  console.log(`Searching via RSS: ${url}`);
   
-  for (const url of endpoints) {
-    try {
-      console.log(`Trying: ${url}`);
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": "TrendPulse/1.0 (personal project - https://github.com/cvielresume/trendpulse)",
-          "Accept": "application/json",
-        },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        const posts = data.data?.children || [];
-        console.log(`Found ${posts.length} pain point results`);
-        return { posts };
-      }
-      
-      console.log(`Failed: ${response.status}`);
-    } catch (error) {
-      console.log(`Error with endpoint: ${error}`);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "TrendPulse/1.0 (personal project)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml",
+      },
+    });
+    
+    if (!response.ok) {
+      console.error(`RSS search failed: ${response.status}`);
+      return { posts: [], error: `Reddit returned ${response.status}` };
     }
+    
+    const xmlText = await response.text();
+    const posts = parseRedditRSS(xmlText);
+    console.log(`RSS search found ${posts.length} results`);
+    return { posts };
+  } catch (error) {
+    console.error("Error searching via RSS:", error);
+    return { posts: [], error: String(error) };
   }
-  
-  // All endpoints failed - return empty with error
-  return { posts: [], error: "Reddit is blocking requests from cloud servers. Pain Points requires direct access." };
 }
 
 // Fetch posts from a single subreddit (hot or rising)
@@ -329,48 +321,27 @@ export async function fetchCategoryPosts(
   return { posts: sortedPosts };
 }
 
-// Fetch pain points from problem-focused subreddits (RSS works, search API is blocked)
+// Fetch pain points from Reddit search via RSS (searches ALL Reddit!)
 export async function fetchPainPoints(): Promise<{ posts: RedditPost[]; error?: string }> {
-  console.log("Fetching pain points from problem subreddits...");
+  console.log("Searching all Reddit for pain points via RSS...");
   
-  // Subreddits where people complain or ask for help
-  const problemSubreddits = [
-    "HelpMeFind",
-    "Advice", 
-    "NoStupidQuestions",
-    "TooAfraidToAsk",
-    "needadvice",
-    "Help",
-    "answers",
-    "findareddit",
-    "smallbusiness",
-    "startups",
-    "SaaS",
-    "programming",
-  ];
+  // Search Reddit using RSS (works on Vercel!)
+  const result = await searchPainPointsRSS(complaintKeywords, 100);
   
-  // Fetch from these subreddits via RSS (works on Vercel)
-  const promises = problemSubreddits.map(sr => fetchSubreddit(sr, "hot", 25));
-  const results = await Promise.all(promises);
-  const allRawPosts = results.flatMap(r => r.posts);
+  if (result.error) {
+    return { posts: [], error: result.error };
+  }
   
-  console.log(`Fetched ${allRawPosts.length} total posts from problem subreddits`);
+  const searchResults = result.posts;
+  console.log(`Found ${searchResults.length} pain point results from search`);
   
-  // Filter for pain point keywords in title
-  const painPointPosts = allRawPosts.filter(post => {
-    const title = post.data.title.toLowerCase();
-    return complaintKeywords.some(keyword => title.includes(keyword));
-  });
-  
-  console.log(`Found ${painPointPosts.length} posts matching pain point keywords`);
-  
-  if (painPointPosts.length === 0) {
+  if (searchResults.length === 0) {
     return { posts: [], error: "No pain points found right now. Try again later." };
   }
   
   // Apply quality filters
   const filterStats: Record<string, number> = {};
-  const filtered = painPointPosts.filter(post => {
+  const filtered = searchResults.filter(post => {
     const result = passesFilters(post);
     if (!result.passes && result.reason) {
       filterStats[result.reason] = (filterStats[result.reason] || 0) + 1;
