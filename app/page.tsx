@@ -72,11 +72,63 @@ export default function Home() {
   const [cacheAge, setCacheAge] = useState<number | null>(null);
   const pullStartY = useRef(0);
   const [pullDistance, setPullDistance] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const pullDistanceRef = useRef(0);
 
   // Load saved posts on mount
   useEffect(() => {
     setSavedPosts(loadSavedPosts());
   }, []);
+  
+  // Pull to refresh - use native scroll detection
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    
+    let startY = 0;
+    let isPulling = false;
+    
+    const handleTouchStart = (e: TouchEvent) => {
+      if (window.scrollY === 0 && !showSaved) {
+        startY = e.touches[0].clientY;
+        isPulling = true;
+      }
+    };
+    
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPulling) return;
+      
+      const currentY = e.touches[0].clientY;
+      const distance = currentY - startY;
+      
+      if (distance > 0 && window.scrollY === 0) {
+        pullDistanceRef.current = Math.min(distance, 100);
+        setPullDistance(pullDistanceRef.current);
+      }
+    };
+    
+    const handleTouchEnd = () => {
+      if (pullDistanceRef.current > 60 && isPulling) {
+        setIsRefreshing(true);
+        const apiCategory = categoryToApiCategory[selectedCategory] || "trending";
+        clearCategoryCache(apiCategory);
+        fetchPosts(selectedCategory, true);
+      }
+      pullDistanceRef.current = 0;
+      setPullDistance(0);
+      isPulling = false;
+    };
+    
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+    container.addEventListener('touchend', handleTouchEnd);
+    
+    return () => {
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [selectedCategory, showSaved, fetchPosts]);
 
   const toggleSave = (post: RedditPost) => {
     const isSaved = savedPosts.some(p => p.id === post.id);
@@ -131,7 +183,7 @@ export default function Home() {
     return complaintKeywords.some(keyword => titleLower.includes(keyword));
   };
 
-  // Fetch posts from API
+  // Fetch posts from API - ONLY fetches when explicitly called
   const fetchPosts = useCallback(async (category: string, forceRefresh = false) => {
     const apiCategory = categoryToApiCategory[category] || "trending";
     
@@ -140,11 +192,8 @@ export default function Home() {
     if (cached && !forceRefresh) {
       setPosts(cached.posts);
       setCacheAge(getCacheAge(apiCategory));
-      
-      // If cache is fresh, don't fetch
-      if (isCacheFresh(apiCategory)) {
-        return;
-      }
+      // DON'T auto-fetch if cache is stale - wait for user to refresh
+      return;
     }
     
     setIsLoading(true);
@@ -195,30 +244,6 @@ export default function Home() {
     setError(null);
   };
 
-  // Pull to refresh handlers
-  const handleTouchStart = (e: React.TouchEvent) => {
-    pullStartY.current = e.touches[0].clientY;
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (window.scrollY === 0) {
-      const distance = e.touches[0].clientY - pullStartY.current;
-      if (distance > 0) {
-        setPullDistance(Math.min(distance, 80));
-      }
-    }
-  };
-
-  const handleTouchEnd = () => {
-    if (pullDistance > 60) {
-      setIsRefreshing(true);
-      const apiCategory = categoryToApiCategory[selectedCategory] || "trending";
-      clearCategoryCache(apiCategory);
-      fetchPosts(selectedCategory, true);
-    }
-    setPullDistance(0);
-  };
-
   // Format cache age display
   const getCacheAgeDisplay = () => {
     if (cacheAge === null) return null;
@@ -232,16 +257,13 @@ export default function Home() {
 
   return (
     <main
+      ref={containerRef}
       style={{
         minHeight: "100vh",
         backgroundColor: "var(--paper-white)",
         maxWidth: "100vw",
         paddingBottom: "80px",
-        touchAction: "pan-y",
       }}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
     >
       {/* Pull indicator */}
       {!showSaved && pullDistance > 0 && (

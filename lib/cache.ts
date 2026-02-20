@@ -2,7 +2,7 @@ import { RedditPost } from "./reddit-fetcher";
 
 const CACHE_PREFIX = "trendpulse_cache_";
 const CACHE_TIMESTAMP_PREFIX = "trendpulse_time_";
-const CACHE_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+const CACHE_DURATION_MS = 60 * 60 * 1000; // 60 minutes (increased to reduce API calls)
 const MAX_CACHE_SIZE = 500; // Max posts per category
 
 export interface CachedData {
