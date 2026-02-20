@@ -1,0 +1,260 @@
+import { blockedDomains, MIN_QUALITY_RATIO } from "./reddit-config";
+
+export interface RedditPost {
+  id: string;
+  subreddit: string;
+  title: string;
+  upvotes: number;
+  comments: number;
+  timeAgo: string;
+  permalink: string;
+  url: string;
+  domain: string;
+  postHint: string | null;
+  createdAt: number;
+  isRising: boolean; // Posts gaining momentum (from /rising)
+}
+
+interface RawRedditPost {
+  data: {
+    id: string;
+    subreddit_name_prefixed: string;
+    title: string;
+    ups: number;
+    num_comments: number;
+    created_utc: number;
+    permalink: string;
+    url: string;
+    domain: string;
+    post_hint?: string;
+    is_self: boolean;
+    is_video: boolean;
+  };
+}
+
+// Complaint/pain point keywords to search for (simplified for better results)
+export const complaintKeywords = [
+  "i hate",
+  "frustrated",
+  "annoying",
+  "expensive",
+  "why is",
+  "i wish",
+  "is there a tool",
+  "how do i",
+  "help me",
+  "struggling with",
+  "problem with",
+  "sucks",
+  "tired of",
+];
+
+// Search Reddit for pain points using search API
+async function searchPainPoints(keywords: string[], limit = 100): Promise<RawRedditPost[]> {
+  // Build search query with proper encoding
+  const searchQuery = encodeURIComponent(keywords.join(" OR "));
+  
+  const url = `https://www.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`;
+  console.log(`Searching: ${url}`);
+  
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    
+    if (!response.ok) {
+      console.error(`Failed to search pain points: ${response.status}`);
+      return [];
+    }
+    
+    const data = await response.json();
+    return data.data?.children || [];
+  } catch (error) {
+    console.error("Error searching pain points:", error);
+    return [];
+  }
+}
+
+// Fetch posts from a single subreddit (hot or rising)
+async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot", limit = 25): Promise<RawRedditPost[]> {
+  try {
+    const response = await fetch(
+      `https://www.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      }
+    );
+    
+    if (!response.ok) {
+      console.error(`Failed to fetch r/${subreddit}/${sort}: ${response.status}`);
+      return [];
+    }
+    
+    const data = await response.json();
+    return data.data?.children || [];
+  } catch (error) {
+    console.error(`Error fetching r/${subreddit}/${sort}:`, error);
+    return [];
+  }
+}
+
+// Convert timestamp to relative time
+function timeAgo(timestamp: number): string {
+  const seconds = Math.floor(Date.now() / 1000 - timestamp);
+  
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
+  return `${Math.floor(seconds / 604800)}w`;
+}
+
+// Check if post passes all quality filters (NO TIME FILTER - let all ages through)
+function passesFilters(post: RawRedditPost): { passes: boolean; reason?: string } {
+  const data = post.data;
+  
+  // Layer 2: Post type filter
+  // Skip videos
+  if (data.is_video) return { passes: false, reason: "video" };
+  
+  // Skip image posts (post_hint: 'image')
+  if (data.post_hint === "image") return { passes: false, reason: "image" };
+  
+  // Layer 3: Domain filter
+  const domain = data.domain.toLowerCase();
+  if (blockedDomains.some(blocked => domain.includes(blocked))) {
+    return { passes: false, reason: "blocked_domain" };
+  }
+  
+  // Layer 5: Engagement quality score
+  // Skip posts with very low comment-to-upvote ratio (passive content)
+  if (data.ups > 100) { // Only apply to posts with significant upvotes
+    const ratio = data.num_comments / data.ups;
+    if (ratio < MIN_QUALITY_RATIO) {
+      return { passes: false, reason: `low_ratio:${ratio.toFixed(4)}` };
+    }
+  }
+  
+  return { passes: true };
+}
+
+// Transform raw Reddit post to our format
+function transformPost(post: RawRedditPost, isRising = false): RedditPost {
+  const data = post.data;
+  return {
+    id: data.id,
+    subreddit: data.subreddit_name_prefixed,
+    title: data.title,
+    upvotes: data.ups,
+    comments: data.num_comments,
+    timeAgo: timeAgo(data.created_utc),
+    permalink: `https://reddit.com${data.permalink}`,
+    url: data.url,
+    domain: data.domain,
+    postHint: data.post_hint || null,
+    createdAt: data.created_utc * 1000,
+    isRising,
+  };
+}
+
+// Main fetch function - gets posts from multiple subreddits (hot + rising, no age filters)
+export async function fetchCategoryPosts(
+  subreddits: string[],
+  limitPerSubreddit = 20
+): Promise<RedditPost[]> {
+  // Fetch HOT posts (popular now, any age)
+  const hotPromises = subreddits.map(sr => fetchSubreddit(sr, "hot", limitPerSubreddit));
+  const hotResults = await Promise.all(hotPromises);
+  const hotPosts = hotResults.flat();
+  
+  // Fetch RISING posts (gaining momentum, any age)
+  const risingPromises = subreddits.map(sr => fetchSubreddit(sr, "rising", Math.floor(limitPerSubreddit / 2)));
+  const risingResults = await Promise.all(risingPromises);
+  const risingPosts = risingResults.flat();
+  
+  console.log(`Fetched ${hotPosts.length} hot + ${risingPosts.length} rising = ${hotPosts.length + risingPosts.length} total posts`);
+  
+  // Apply quality filters (no time filter)
+  const filterStats: Record<string, number> = {};
+  
+  const filteredHot = hotPosts.filter(post => {
+    const result = passesFilters(post);
+    if (!result.passes && result.reason) {
+      filterStats[result.reason] = (filterStats[result.reason] || 0) + 1;
+    }
+    return result.passes;
+  });
+  
+  const filteredRising = risingPosts.filter(post => {
+    const result = passesFilters(post);
+    if (!result.passes && result.reason) {
+      filterStats[result.reason] = (filterStats[result.reason] || 0) + 1;
+    }
+    return result.passes;
+  });
+  
+  console.log("Filter stats:", filterStats);
+  console.log(`${filteredHot.length} hot + ${filteredRising.length} rising passed filters`);
+  
+  // Transform to our format (mark rising posts)
+  const transformedHot = filteredHot.map(post => transformPost(post, false));
+  const transformedRising = filteredRising.map(post => transformPost(post, true));
+  
+  // Combine and remove duplicates (same post might be in both hot and rising)
+  const allPosts = [...transformedRising, ...transformedHot];
+  const seen = new Set<string>();
+  const uniquePosts: RedditPost[] = [];
+  
+  for (const post of allPosts) {
+    if (!seen.has(post.id)) {
+      seen.add(post.id);
+      uniquePosts.push(post);
+    }
+  }
+  
+  // Sort: Rising posts first (they're surging), then hot posts by upvotes
+  const risingCount = uniquePosts.filter(p => p.isRising).length;
+  const hotPosts_sorted = uniquePosts.filter(p => !p.isRising).sort((a, b) => b.upvotes - a.upvotes);
+  const sortedPosts = [...uniquePosts.filter(p => p.isRising), ...hotPosts_sorted];
+  
+  console.log(`Returning ${sortedPosts.length} unique posts (${risingCount} rising)`);
+  
+  return sortedPosts;
+}
+
+// Fetch pain points from Reddit search
+export async function fetchPainPoints(): Promise<RedditPost[]> {
+  console.log("Searching Reddit for pain points...");
+  
+  const searchResults = await searchPainPoints(complaintKeywords, 100);
+  console.log(`Found ${searchResults.length} pain point results`);
+  
+  // Apply quality filters
+  const filterStats: Record<string, number> = {};
+  const filtered = searchResults.filter(post => {
+    const result = passesFilters(post);
+    if (!result.passes && result.reason) {
+      filterStats[result.reason] = (filterStats[result.reason] || 0) + 1;
+    }
+    return result.passes;
+  });
+  
+  console.log("Filter stats:", filterStats);
+  console.log(`${filtered.length} pain points passed filters`);
+  
+  // Transform and sort by upvotes
+  const transformed = filtered.map(post => transformPost(post, false));
+  transformed.sort((a, b) => b.upvotes - a.upvotes);
+  
+  console.log(`Returning ${transformed.length} pain points`);
+  
+  return transformed;
+}
