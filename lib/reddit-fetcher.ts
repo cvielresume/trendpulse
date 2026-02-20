@@ -50,46 +50,73 @@ export const complaintKeywords = [
 ];
 
 // Search Reddit for pain points using search API
+// Try multiple approaches since Reddit blocks cloud IPs
 async function searchPainPoints(keywords: string[], limit = 100): Promise<{ posts: RawRedditPost[]; error?: string }> {
   // Build search query with proper encoding
   const searchQuery = encodeURIComponent(keywords.join(" OR "));
   
-  const url = `https://old.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`;
-  console.log(`Searching: ${url}`);
+  // Try multiple endpoints
+  const endpoints = [
+    `https://old.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`,
+    `https://www.reddit.com/search.json?q=${searchQuery}&sort=relevance&t=day&limit=${limit}`,
+  ];
   
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Referer": "https://www.reddit.com/",
-        "Origin": "https://www.reddit.com",
-      },
-    });
-    
-    if (!response.ok) {
-      console.error(`Failed to search pain points: ${response.status}`);
-      return { posts: [], error: `Reddit returned ${response.status}` };
+  for (const url of endpoints) {
+    try {
+      console.log(`Trying: ${url}`);
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "TrendPulse/1.0 (personal project - https://github.com/cvielresume/trendpulse)",
+          "Accept": "application/json",
+        },
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const posts = data.data?.children || [];
+        console.log(`Found ${posts.length} pain point results`);
+        return { posts };
+      }
+      
+      console.log(`Failed: ${response.status}`);
+    } catch (error) {
+      console.log(`Error with endpoint: ${error}`);
     }
-    
-    const data = await response.json();
-    const posts = data.data?.children || [];
-    console.log(`Found ${posts.length} pain point results`);
-    return { posts };
-  } catch (error) {
-    console.error("Error searching pain points:", error);
-    return { posts: [], error: String(error) };
   }
+  
+  // All endpoints failed - return empty with error
+  return { posts: [], error: "Reddit is blocking requests from cloud servers. Pain Points requires direct access." };
 }
 
 // Fetch posts from a single subreddit (hot or rising)
+// Try multiple methods: RSS first (less blocked), then JSON API
 async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot", limit = 25): Promise<{ posts: RawRedditPost[]; error?: string }> {
+  // Method 1: Try RSS feed (often works where JSON API is blocked)
+  if (sort === "hot") {
+    try {
+      const rssUrl = `https://www.reddit.com/r/${subreddit}/.rss?limit=${limit}`;
+      const response = await fetch(rssUrl, {
+        headers: {
+          "User-Agent": "TrendPulse/1.0 (personal project)",
+          "Accept": "application/rss+xml, application/xml, text/xml",
+        },
+      });
+      
+      if (response.ok) {
+        const xmlText = await response.text();
+        const posts = parseRedditRSS(xmlText);
+        if (posts.length > 0) {
+          console.log(`Fetched ${posts.length} posts from r/${subreddit} via RSS`);
+          return { posts };
+        }
+      }
+    } catch (error) {
+      console.log(`RSS failed for r/${subreddit}, trying JSON API...`);
+    }
+  }
+  
+  // Method 2: Try old.reddit.com JSON API
   try {
-    // Try old.reddit.com first (often less strict about cloud IPs)
     const url = `https://old.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`;
     
     const response = await fetch(url, {
@@ -97,11 +124,7 @@ async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
         "Referer": "https://www.reddit.com/",
-        "Origin": "https://www.reddit.com",
       },
       redirect: "follow",
     });
@@ -120,6 +143,53 @@ async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot",
     console.error(`Error fetching r/${subreddit}/${sort}:`, error);
     return { posts: [], error: String(error) };
   }
+}
+
+// Parse Reddit RSS feed to extract posts
+function parseRedditRSS(xml: string): RawRedditPost[] {
+  const posts: RawRedditPost[] = [];
+  
+  // Simple regex-based parsing (no external XML parser needed)
+  const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
+  let match;
+  
+  while ((match = entryRegex.exec(xml)) !== null) {
+    const entry = match[1];
+    
+    // Extract fields
+    const idMatch = entry.match(/<id>.*?\/comments\/([a-z0-9]+)\//i);
+    const titleMatch = entry.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/i) || entry.match(/<title>(.*?)<\/title>/i);
+    const subredditMatch = entry.match(/<category\s+term="([^"]+)"/i);
+    const linkMatch = entry.match(/<link[^>]+href="([^"]+)"/i);
+    const contentMatch = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/i);
+    const publishedMatch = entry.match(/<published>(.*?)<\/published>/i);
+    
+    if (!idMatch || !titleMatch) continue;
+    
+    // Extract upvotes and comments from content
+    const content = contentMatch?.[1] || "";
+    const upvotesMatch = content.match(/(\d+)\s*points?/i);
+    const commentsMatch = content.match(/(\d+)\s*comments?/i);
+    
+    posts.push({
+      data: {
+        id: idMatch[1],
+        subreddit_name_prefixed: `r/${subredditMatch?.[1] || "unknown"}`,
+        title: titleMatch[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"),
+        ups: parseInt(upvotesMatch?.[1] || "0", 10),
+        num_comments: parseInt(commentsMatch?.[1] || "0", 10),
+        created_utc: publishedMatch?.[1] ? new Date(publishedMatch[1]).getTime() / 1000 : Date.now() / 1000,
+        permalink: linkMatch?.[1] || "",
+        url: linkMatch?.[1] || "",
+        domain: "reddit.com",
+        is_self: true,
+        is_video: false,
+        post_hint: "self",
+      },
+    });
+  }
+  
+  return posts;
 }
 
 // Convert timestamp to relative time
