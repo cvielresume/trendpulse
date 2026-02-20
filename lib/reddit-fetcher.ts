@@ -81,42 +81,62 @@ async function searchPainPointsRSS(keywords: string[], limit = 100): Promise<{ p
 }
 
 // Fetch posts from a single subreddit (hot or rising)
-// Priority: JSON API (has engagement data) > RSS (fallback)
+// Priority: Proxy (gets engagement data) > Direct JSON > RSS fallback
 async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot", limit = 25): Promise<{ posts: RawRedditPost[]; error?: string }> {
-  // Method 1: Try JSON API first (has upvotes, comments, etc.)
+  const redditUrl = `https://old.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`;
+  
+  // Method 1: Try via CORS proxy (bypasses Reddit's Vercel block)
   try {
-    const url = `https://old.reddit.com/r/${subreddit}/${sort}.json?limit=${limit}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(redditUrl)}`;
     
-    const response = await fetch(url, {
+    const response = await fetch(proxyUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.reddit.com/",
+        "Accept": "application/json",
       },
-      redirect: "follow",
     });
     
     if (response.ok) {
       const data = await response.json();
       const posts = data.data?.children || [];
       if (posts.length > 0) {
-        console.log(`Fetched ${posts.length} posts from r/${subreddit}/${sort} via JSON`);
+        console.log(`Fetched ${posts.length} posts from r/${subreddit}/${sort} via proxy`);
         return { posts };
       }
     }
-    console.log(`JSON API failed for r/${subreddit}/${sort}: ${response.status}, trying RSS...`);
+    console.log(`Proxy failed for r/${subreddit}: ${response.status}`);
   } catch (error) {
-    console.log(`JSON API error for r/${subreddit}: ${error}, trying RSS...`);
+    console.log(`Proxy error for r/${subreddit}: ${error}`);
   }
   
-  // Method 2: Fallback to RSS (less data but often works when JSON is blocked)
+  // Method 2: Try direct JSON API (might work sometimes)
   try {
-    const rssUrl = `https://www.reddit.com/r/${subreddit}/${sort}.rss?limit=${limit}`;
+    const response = await fetch(redditUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.reddit.com/",
+      },
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      const posts = data.data?.children || [];
+      if (posts.length > 0) {
+        console.log(`Fetched ${posts.length} posts from r/${subreddit}/${sort} via direct JSON`);
+        return { posts };
+      }
+    }
+  } catch (error) {
+    console.log(`Direct JSON failed for r/${subreddit}`);
+  }
+  
+  // Method 3: Fallback to RSS (no engagement data but works)
+  try {
+    const rssUrl = `https://www.reddit.com/r/${subreddit}/${sort === "rising" ? "new" : ""}.rss?limit=${limit}`;
     const response = await fetch(rssUrl, {
       headers: {
-        "User-Agent": "TrendPulse/1.0 (personal project)",
-        "Accept": "application/rss+xml, application/xml, text/xml",
+        "User-Agent": "TrendPulse/1.0",
+        "Accept": "application/rss+xml",
       },
     });
     
@@ -124,12 +144,12 @@ async function fetchSubreddit(subreddit: string, sort: "hot" | "rising" = "hot",
       const xmlText = await response.text();
       const posts = parseRedditRSS(xmlText);
       if (posts.length > 0) {
-        console.log(`Fetched ${posts.length} posts from r/${subreddit} via RSS (fallback)`);
+        console.log(`Fetched ${posts.length} posts from r/${subreddit} via RSS (fallback, no engagement data)`);
         return { posts };
       }
     }
   } catch (error) {
-    console.error(`RSS also failed for r/${subreddit}:`, error);
+    console.error(`All methods failed for r/${subreddit}:`, error);
   }
   
   return { posts: [], error: `Failed to fetch r/${subreddit}` };
