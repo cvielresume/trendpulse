@@ -78,11 +78,10 @@ export default function Home() {
   // Keep refs for values needed in event handlers (avoids stale closures)
   const selectedCategoryRef = useRef(selectedCategory);
   const showSavedRef = useRef(showSaved);
-  const fetchPostsRef = useRef(fetchPosts);
+  const fetchPostsRef = useRef<((cat: string, force: boolean) => Promise<void>) | undefined>(undefined);
   
   useEffect(() => { selectedCategoryRef.current = selectedCategory; }, [selectedCategory]);
   useEffect(() => { showSavedRef.current = showSaved; }, [showSaved]);
-  useEffect(() => { fetchPostsRef.current = fetchPosts; }, [fetchPosts]);
 
   // Load saved posts on mount
   useEffect(() => {
@@ -128,7 +127,9 @@ export default function Home() {
         setCacheAge(null);
         
         // Fetch fresh data
-        fetchPostsRef.current(cat, true);
+        if (fetchPostsRef.current) {
+          fetchPostsRef.current(cat, true);
+        }
       }
       
       pullDistanceRef.current = 0;
@@ -242,6 +243,9 @@ export default function Home() {
       setIsRefreshing(false);
     }
   }, []);
+  
+  // Update ref when fetchPosts changes (for pull-to-refresh)
+  useEffect(() => { fetchPostsRef.current = fetchPosts; }, [fetchPosts]);
 
   // Get display posts (API already filters pain points)
   const displayPosts = posts;
@@ -317,7 +321,6 @@ export default function Home() {
           <span style={{ animation: "spin 1s linear infinite" }}>↻</span>
           Refreshing...
         </div>
-      )}
       )}
 
       {/* Header */}
